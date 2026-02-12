@@ -20,6 +20,18 @@ const RSS_FEEDS = {
     name: 'インフラ・土木',
     url: 'https://news.google.com/rss/search?q=インフラ+土木+工事+橋梁&hl=ja&gl=JP&ceid=JP:ja',
   },
+  saga_construction: {
+    name: '佐賀 建設・建築',
+    url: 'https://news.google.com/rss/search?q=佐賀+建設+OR+建築+OR+工事&hl=ja&gl=JP&ceid=JP:ja',
+  },
+  saga_keizai: {
+    name: '佐賀経済新聞',
+    url: 'https://saga.keizai.biz/rss.xml',
+  },
+  saga_news: {
+    name: '佐賀新聞',
+    url: 'https://www.saga-s.co.jp/list/feed/rss',
+  },
 };
 
 // CORS proxy for client-side RSS fetching
@@ -73,10 +85,20 @@ function createNewsCard(article) {
   card.target = '_blank';
   card.rel = 'noopener noreferrer';
 
+  // Build author info HTML
+  let authorHtml = '';
+  if (article.authorName || article.authorEmail) {
+    const parts = [];
+    if (article.authorName) parts.push(escapeHtml(article.authorName));
+    if (article.authorEmail) parts.push(escapeHtml(article.authorEmail));
+    authorHtml = `<div class="card-author">${parts.join(' / ')}</div>`;
+  }
+
   card.innerHTML = `
     ${article.source ? `<div class="card-source">${escapeHtml(article.source)}</div>` : ''}
     <div class="card-title">${escapeHtml(article.title)}</div>
-    ${article.description ? `<div class="card-description">${escapeHtml(article.description)}</div>` : ''}
+    ${article.description ? `<div class="card-summary">${escapeHtml(article.description)}</div>` : ''}
+    ${authorHtml}
     <div class="card-meta">
       <span class="card-date">${formatDate(article.pubDate)}</span>
       <span class="read-more">記事を読む &rarr;</span>
@@ -95,10 +117,41 @@ function cleanTitle(title) {
   return title.replace(/\s*-\s*[^-]+$/, '').trim();
 }
 
+// Parse author string "email (name)" or just "name" or "email"
+function parseAuthor(raw) {
+  if (!raw) return { name: '', email: '' };
+  const str = raw.trim();
+  // RSS spec format: "email (Name)"
+  const match = str.match(/^([^\s@]+@[^\s@]+)\s*\((.+)\)$/);
+  if (match) return { email: match[1], name: match[2] };
+  // Just email
+  if (str.includes('@')) return { email: str, name: '' };
+  // Just name
+  return { name: str, email: '' };
+}
+
+function getElementText(parent, tagName) {
+  const el = parent.querySelector(tagName);
+  return el?.textContent?.trim() || '';
+}
+
+function getElementTextNS(parent, nsPrefix, localName) {
+  // Try namespace-aware lookup for dc:creator etc.
+  const el = parent.getElementsByTagName(nsPrefix + ':' + localName)[0];
+  return el?.textContent?.trim() || '';
+}
+
 function parseRSSXml(xmlText) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlText, 'text/xml');
   const items = doc.querySelectorAll('item');
+
+  // Channel-level author info as fallback
+  const channel = doc.querySelector('channel');
+  const channelEditor = getElementText(channel, 'managingEditor');
+  const channelAuthor = getElementTextNS(channel, 'dc', 'creator');
+  const channelFallback = parseAuthor(channelEditor || channelAuthor);
+
   const articles = [];
 
   items.forEach((item) => {
@@ -107,12 +160,20 @@ function parseRSSXml(xmlText) {
     const source = sourceEl?.textContent || extractSourceFromTitle(fullTitle);
     const descriptionRaw = item.querySelector('description')?.textContent || '';
 
+    // Author: try <author>, <dc:creator>, then channel-level fallback
+    const authorRaw = getElementText(item, 'author')
+      || getElementTextNS(item, 'dc', 'creator')
+      || '';
+    const author = authorRaw ? parseAuthor(authorRaw) : channelFallback;
+
     articles.push({
       title: cleanTitle(fullTitle),
       link: item.querySelector('link')?.textContent || '',
       pubDate: item.querySelector('pubDate')?.textContent || '',
       source: source,
-      description: descriptionRaw.replace(/<[^>]*>/g, '').substring(0, 200),
+      description: descriptionRaw.replace(/<[^>]*>/g, '').substring(0, 300),
+      authorName: author.name,
+      authorEmail: author.email,
     });
   });
 
