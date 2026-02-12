@@ -1,3 +1,33 @@
+// RSS Feed configuration
+const RSS_FEEDS = {
+  general: {
+    name: '建設・建築 総合',
+    url: 'https://news.google.com/rss/search?q=建設+OR+建築+ニュース&hl=ja&gl=JP&ceid=JP:ja',
+  },
+  architecture: {
+    name: '建築デザイン',
+    url: 'https://news.google.com/rss/search?q=建築+デザイン+設計&hl=ja&gl=JP&ceid=JP:ja',
+  },
+  construction_tech: {
+    name: '建設テクノロジー',
+    url: 'https://news.google.com/rss/search?q=建設+DX+BIM+テクノロジー&hl=ja&gl=JP&ceid=JP:ja',
+  },
+  realestate: {
+    name: '不動産・開発',
+    url: 'https://news.google.com/rss/search?q=不動産+開発+再開発+建設&hl=ja&gl=JP&ceid=JP:ja',
+  },
+  infrastructure: {
+    name: 'インフラ・土木',
+    url: 'https://news.google.com/rss/search?q=インフラ+土木+工事+橋梁&hl=ja&gl=JP&ceid=JP:ja',
+  },
+};
+
+// CORS proxy for client-side RSS fetching
+const CORS_PROXIES = [
+  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+];
+
 let allNewsData = {};
 let categories = [];
 let currentCategory = 'all';
@@ -30,6 +60,12 @@ function formatDate(dateStr) {
   }
 }
 
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 function createNewsCard(article) {
   const card = document.createElement('a');
   card.className = 'news-card';
@@ -50,23 +86,78 @@ function createNewsCard(article) {
   return card;
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+function extractSourceFromTitle(title) {
+  const match = title.match(/\s*-\s*([^-]+)$/);
+  return match ? match[1].trim() : '';
+}
+
+function cleanTitle(title) {
+  return title.replace(/\s*-\s*[^-]+$/, '').trim();
+}
+
+function parseRSSXml(xmlText) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xmlText, 'text/xml');
+  const items = doc.querySelectorAll('item');
+  const articles = [];
+
+  items.forEach((item) => {
+    const fullTitle = item.querySelector('title')?.textContent || '';
+    const sourceEl = item.querySelector('source');
+    const source = sourceEl?.textContent || extractSourceFromTitle(fullTitle);
+    const descriptionRaw = item.querySelector('description')?.textContent || '';
+
+    articles.push({
+      title: cleanTitle(fullTitle),
+      link: item.querySelector('link')?.textContent || '',
+      pubDate: item.querySelector('pubDate')?.textContent || '',
+      source: source,
+      description: descriptionRaw.replace(/<[^>]*>/g, '').substring(0, 200),
+    });
+  });
+
+  return articles.slice(0, 20);
+}
+
+async function fetchWithProxy(url) {
+  for (const makeProxy of CORS_PROXIES) {
+    try {
+      const proxyUrl = makeProxy(url);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(proxyUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!res.ok) continue;
+      return await res.text();
+    } catch {
+      continue;
+    }
+  }
+  throw new Error('All proxies failed');
+}
+
+async function fetchFeed(feedKey) {
+  const feed = RSS_FEEDS[feedKey];
+  if (!feed) return [];
+
+  try {
+    const xml = await fetchWithProxy(feed.url);
+    return parseRSSXml(xml);
+  } catch (err) {
+    console.warn(`Failed to fetch ${feedKey}:`, err.message);
+    return [];
+  }
 }
 
 function renderNews(categoryKey) {
   newsContainer.innerHTML = '';
   currentCategory = categoryKey;
 
-  // Update active button
   document.querySelectorAll('.cat-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.category === categoryKey);
   });
 
   if (categoryKey === 'all') {
-    // Show all categories
     for (const cat of categories) {
       const articles = allNewsData[cat.key] || [];
       if (articles.length === 0) continue;
@@ -90,7 +181,6 @@ function renderNews(categoryKey) {
       newsContainer.appendChild(section);
     }
   } else {
-    // Show single category
     const cat = categories.find((c) => c.key === categoryKey);
     const articles = allNewsData[categoryKey] || [];
 
@@ -120,7 +210,6 @@ function renderNews(categoryKey) {
 }
 
 function setupCategoryNav() {
-  // Clear existing buttons except "all"
   categoryNav.innerHTML = '<button class="cat-btn active" data-category="all">すべて</button>';
 
   categories.forEach((cat) => {
@@ -131,7 +220,6 @@ function setupCategoryNav() {
     categoryNav.appendChild(btn);
   });
 
-  // Add click handlers
   categoryNav.querySelectorAll('.cat-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       renderNews(btn.dataset.category);
@@ -145,30 +233,28 @@ async function loadAllNews() {
   newsContainer.innerHTML = '';
 
   try {
-    // Fetch categories and news in parallel
-    const [catRes, newsRes] = await Promise.all([
-      fetch('/api/categories'),
-      fetch('/api/news'),
-    ]);
-
-    categories = await catRes.json();
-    const newsData = await newsRes.json();
-
-    if (!newsData.success) throw new Error('Failed to fetch news');
-
-    allNewsData = newsData.articles;
+    categories = Object.entries(RSS_FEEDS).map(([key, feed]) => ({
+      key,
+      name: feed.name,
+    }));
 
     setupCategoryNav();
-    renderNews('all');
 
+    // Fetch all feeds in parallel
+    const feedKeys = Object.keys(RSS_FEEDS);
+    const results = await Promise.all(feedKeys.map((key) => fetchFeed(key)));
+
+    feedKeys.forEach((key, i) => {
+      allNewsData[key] = results[i];
+    });
+
+    const totalArticles = Object.values(allNewsData).reduce((sum, arr) => sum + arr.length, 0);
+
+    renderNews('all');
     loadingEl.classList.add('hidden');
 
-    // Show banner if using sample data
-    if (!newsData.live) {
-      const banner = document.createElement('div');
-      banner.className = 'sample-banner';
-      banner.textContent = 'ライブフィードに接続できないため、サンプルデータを表示しています。インターネット接続時は最新ニュースが自動取得されます。';
-      newsContainer.prepend(banner);
+    if (totalArticles === 0) {
+      errorEl.classList.remove('hidden');
     }
   } catch (err) {
     console.error('Error loading news:', err);
