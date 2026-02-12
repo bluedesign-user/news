@@ -25,8 +25,9 @@ const RSS_FEEDS = {
     url: 'https://news.google.com/rss/search?q=佐賀+建設+OR+建築+OR+工事&hl=ja&gl=JP&ceid=JP:ja',
   },
   saga_keizai: {
-    name: '佐賀経済新聞',
+    name: '佐賀経済新聞（建築・住宅）',
     url: 'https://saga.keizai.biz/rss.xml',
+    filter: ['建築', '住宅', '建設', '工事', '施工', '設計', '不動産', '再開発', 'マンション', 'ビル', '店舗', '開業', '着工', '竣工', '改装', '新築', '増築', '解体', 'リフォーム', 'リノベ'],
   },
   saga_news: {
     name: '佐賀新聞',
@@ -85,13 +86,15 @@ function createNewsCard(article) {
   card.target = '_blank';
   card.rel = 'noopener noreferrer';
 
-  // Build author info HTML
+  // Build author/editor info HTML
   let authorHtml = '';
   if (article.authorName || article.authorEmail) {
     const parts = [];
-    if (article.authorName) parts.push(escapeHtml(article.authorName));
-    if (article.authorEmail) parts.push(escapeHtml(article.authorEmail));
-    authorHtml = `<div class="card-author">${parts.join(' / ')}</div>`;
+    if (article.authorName) parts.push(`<span class="author-name">${escapeHtml(article.authorName)}</span>`);
+    if (article.authorEmail) parts.push(`<span class="author-email">${escapeHtml(article.authorEmail)}</span>`);
+    authorHtml = `<div class="card-author"><span class="author-label">著者:</span> ${parts.join(' / ')}</div>`;
+  } else if (article.source) {
+    authorHtml = `<div class="card-author"><span class="author-label">編集:</span> <span class="author-name">${escapeHtml(article.source)}</span></div>`;
   }
 
   card.innerHTML = `
@@ -203,7 +206,17 @@ async function fetchFeed(feedKey) {
 
   try {
     const xml = await fetchWithProxy(feed.url);
-    return parseRSSXml(xml);
+    let articles = parseRSSXml(xml);
+
+    // Keyword filtering (e.g. saga_keizai: only construction/housing related)
+    if (feed.filter && feed.filter.length > 0) {
+      articles = articles.filter((a) => {
+        const text = (a.title + ' ' + a.description).toLowerCase();
+        return feed.filter.some((kw) => text.includes(kw));
+      });
+    }
+
+    return articles;
   } catch (err) {
     console.warn(`Failed to fetch ${feedKey}:`, err.message);
     return [];
