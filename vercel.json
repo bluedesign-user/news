@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/api/reporter", "destination": "/api/reporter" },
     { "source": "/api/categories", "destination": "/api/categories" },
     { "source": "/api/news/:category", "destination": "/api/news/[category]" },
     { "source": "/api/news", "destination": "/api/news/index" }

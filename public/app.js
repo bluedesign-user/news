@@ -188,7 +188,44 @@ function parseRSSXml(xmlText) {
 }
 
 // ------------------------------------------------------------------
-// Google News URL → 実際の記事URLを解決
+// サーバーAPI検出（Express/Vercel環境で有効）
+// ------------------------------------------------------------------
+
+let serverApiAvailable = null;
+
+async function checkServerApi() {
+  if (serverApiAvailable !== null) return serverApiAvailable;
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch('/api/categories', { signal: controller.signal });
+    clearTimeout(tid);
+    serverApiAvailable = res.ok;
+  } catch {
+    serverApiAvailable = false;
+  }
+  return serverApiAvailable;
+}
+
+// サーバーAPI経由で記者情報をバッチ取得
+async function fetchReporterBatchFromServer(urls) {
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), 30000);
+  const res = await fetch('/api/reporters', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ urls }),
+    signal: controller.signal,
+  });
+  clearTimeout(tid);
+  if (!res.ok) throw new Error('Batch API failed');
+  const data = await res.json();
+  if (!data.success) throw new Error('Batch API error');
+  return data.reporters;
+}
+
+// ------------------------------------------------------------------
+// クライアントサイドフォールバック: Google News URL → 実記事URL
 // ------------------------------------------------------------------
 
 function decodeGoogleNewsUrl(gnewsUrl) {
@@ -196,55 +233,64 @@ function decodeGoogleNewsUrl(gnewsUrl) {
     const match = gnewsUrl.match(/\/articles\/([A-Za-z0-9_-]+)/);
     if (!match) return null;
 
-    // base64url → standard base64
     let b64 = match[1].replace(/-/g, '+').replace(/_/g, '/');
     while (b64.length % 4) b64 += '=';
 
     const raw = atob(b64);
-    // protobuf内に埋め込まれたURLを検索
-    const urlStart = raw.indexOf('http');
-    if (urlStart === -1) return null;
 
-    let url = '';
-    for (let i = urlStart; i < raw.length; i++) {
-      const code = raw.charCodeAt(i);
-      if (code < 0x20 || code > 0x7e) break;
-      url += raw[i];
+    // Strategy 1: 直接 http を検索
+    const urlStart = raw.indexOf('http');
+    if (urlStart !== -1) {
+      let url = '';
+      for (let i = urlStart; i < raw.length; i++) {
+        const code = raw.charCodeAt(i);
+        if (code < 0x20 || code > 0x7e) break;
+        url += raw[i];
+      }
+      if (url.match(/^https?:\/\/.+\..+/)) return url;
     }
 
-    if (url.match(/^https?:\/\/.+\..+/)) return url;
+    // Strategy 2: protobuf length-prefix scan
+    for (let i = 0; i < raw.length - 10; i++) {
+      const len = raw.charCodeAt(i);
+      if (len > 10 && len < 250 && i + 1 + len <= raw.length) {
+        const candidate = raw.substring(i + 1, i + 1 + len);
+        if (candidate.match(/^https?:\/\/[^\s]+\.[^\s]+/)) {
+          let valid = true;
+          for (let j = 0; j < candidate.length; j++) {
+            const c = candidate.charCodeAt(j);
+            if (c < 0x20 || c > 0x7e) { valid = false; break; }
+          }
+          if (valid) return candidate;
+        }
+      }
+    }
   } catch { /* decode error */ }
   return null;
 }
 
 async function resolveGoogleNewsUrl(gnewsUrl) {
-  // 1) ローカルでbase64デコードを試行（高速・ネットワーク不要）
   const decoded = decodeGoogleNewsUrl(gnewsUrl);
   if (decoded) return decoded;
 
-  // 2) フォールバック: CORSプロキシ経由で取得し、リダイレクト先URLを抽出
   try {
     const html = await fetchWithProxy(gnewsUrl);
-    // <a href="..."> からGoogle以外のURLを検索
     const linkMatch = html.match(/<a[^>]+href="(https?:\/\/(?!news\.google\.com)[^"]+)"/);
     if (linkMatch) return linkMatch[1];
-    // data-url属性
     const dataMatch = html.match(/data-url="(https?:\/\/[^"]+)"/);
     if (dataMatch) return dataMatch[1];
   } catch { /* fetch error */ }
-
   return null;
 }
 
 // ------------------------------------------------------------------
-// 記事ページから記者名・連絡先をスクレイピング
+// クライアントサイド記者情報スクレイピング（GitHub Pages用フォールバック）
 // ------------------------------------------------------------------
 
 function extractReporterFromHtml(html) {
   const name = [];
   const email = [];
 
-  // 1) JSON-LD structured data (e.g. xtech.nikkei.com)
   const ldMatches = html.match(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
   if (ldMatches) {
     for (const block of ldMatches) {
@@ -262,23 +308,20 @@ function extractReporterFromHtml(html) {
             }
           }
         }
-      } catch { /* ignore parse errors */ }
+      } catch { /* ignore */ }
     }
   }
 
-  // 2) <meta name="author">
   const metaAuthor = html.match(/<meta[^>]+name\s*=\s*["']author["'][^>]+content\s*=\s*["']([^"']+)["']/i)
     || html.match(/<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+name\s*=\s*["']author["']/i);
   if (metaAuthor && metaAuthor[1]) name.push(metaAuthor[1]);
 
-  // 3) <meta property="article:author">
-  const metaArticleAuthor = html.match(/<meta[^>]+property\s*=\s*["']article:author["'][^>]+content\s*=\s*["']([^"']+)["']/i)
+  const metaAA = html.match(/<meta[^>]+property\s*=\s*["']article:author["'][^>]+content\s*=\s*["']([^"']+)["']/i)
     || html.match(/<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+property\s*=\s*["']article:author["']/i);
-  if (metaArticleAuthor && metaArticleAuthor[1]) name.push(metaArticleAuthor[1]);
+  if (metaAA && metaAA[1]) name.push(metaAA[1]);
 
-  // 4) Common byline patterns in Japanese pages
   const bylinePatterns = [
-    /class\s*=\s*["'][^"']*(?:byline|author-name|writer|journalist|reporter)[^"']*["'][^>]*>([^<]{2,40})</ig,
+    /class\s*=\s*["'][^"']*(?:byline|author-name|writer|journalist|reporter)[^"']*["'][^>]*>([^<]{2,40})/ig,
     /(?:記者|執筆|文)[：:]?\s*([^\s<]{2,20})/g,
   ];
   for (const re of bylinePatterns) {
@@ -291,32 +334,51 @@ function extractReporterFromHtml(html) {
     }
   }
 
-  // 5) Email addresses on the page (filter out generic ones)
   const emailRe = /([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/g;
   let em;
   while ((em = emailRe.exec(html)) !== null) {
     const addr = em[1].toLowerCase();
-    // Skip generic/system emails
     if (!/noreply|webmaster|info@|support@|admin@|example\.com/.test(addr)) {
       email.push(em[1]);
     }
   }
 
-  // Deduplicate
   const uniqueNames = [...new Set(name.map((n) => n.trim()).filter(Boolean))];
   const uniqueEmails = [...new Set(email.map((e) => e.trim()).filter(Boolean))];
 
   return {
-    name: uniqueNames.slice(0, 2).join('、') || '',
+    name: uniqueNames.slice(0, 2).join('\u3001') || '',
     email: uniqueEmails.slice(0, 1).join('') || '',
   };
 }
 
-// Fetch article page and update card with reporter info (non-blocking)
-async function enrichArticleWithReporter(article, cardId) {
+// クライアントサイドで1記事ずつ記者情報を取得（CORSプロキシ経由）
+async function enrichArticleClientSide(article, cardId) {
   if (!article.link) return;
+  try {
+    let url = article.link;
+    if (url.includes('news.google.com')) {
+      const realUrl = await resolveGoogleNewsUrl(url);
+      if (!realUrl) return;
+      url = realUrl;
+      article.resolvedLink = realUrl;
+      const cardEl = document.querySelector(`[data-card-id="${cardId}"]`);
+      if (cardEl) cardEl.href = realUrl;
+    }
+    const html = await fetchWithProxy(url);
+    const reporter = extractReporterFromHtml(html);
+    if (reporter.name || reporter.email) {
+      article.reporterName = reporter.name;
+      article.reporterEmail = reporter.email;
+    }
+  } catch { /* ignore */ }
+}
 
-  // カード上に取得中表示
+// ------------------------------------------------------------------
+// カード記者情報の表示更新
+// ------------------------------------------------------------------
+
+function showLoadingOnCard(cardId) {
   const cardEl = document.querySelector(`[data-card-id="${cardId}"]`);
   if (cardEl) {
     const authorArea = cardEl.querySelector('.card-author-area');
@@ -324,35 +386,6 @@ async function enrichArticleWithReporter(article, cardId) {
       authorArea.innerHTML = '<div class="card-author reporter-loading"><span class="author-label">記者情報を取得中...</span></div>';
     }
   }
-
-  try {
-    let url = article.link;
-
-    // Google News URLの場合、実際の記事URLを解決
-    if (url.includes('news.google.com')) {
-      const realUrl = await resolveGoogleNewsUrl(url);
-      if (!realUrl) {
-        // URL解決失敗 → 元の編集表示に戻す
-        updateCardAuthor(cardId, article);
-        return;
-      }
-      url = realUrl;
-      // 実際のリンクも更新（クリック時に記事に直接飛べるように）
-      article.resolvedLink = realUrl;
-      if (cardEl) cardEl.href = realUrl;
-    }
-
-    const html = await fetchWithProxy(url);
-    const reporter = extractReporterFromHtml(html);
-
-    if (reporter.name || reporter.email) {
-      article.reporterName = reporter.name;
-      article.reporterEmail = reporter.email;
-    }
-  } catch { /* ignore fetch errors */ }
-
-  // 最終表示を更新（成功でも失敗でも）
-  updateCardAuthor(cardId, article);
 }
 
 function updateCardAuthor(cardId, article) {
@@ -477,10 +510,54 @@ function renderNews(categoryKey) {
 }
 
 async function enrichCardsInBackground(queue) {
-  const BATCH = 3;
-  for (let i = 0; i < queue.length; i += BATCH) {
-    const batch = queue.slice(i, i + BATCH);
-    await Promise.all(batch.map(({ article, cid }) => enrichArticleWithReporter(article, cid)));
+  if (queue.length === 0) return;
+
+  // ローディング表示を全カードに出す
+  for (const { cid } of queue) {
+    showLoadingOnCard(cid);
+  }
+
+  const hasServer = await checkServerApi();
+
+  if (hasServer) {
+    // サーバーAPI経由: バッチ10件ずつ
+    const BATCH = 10;
+    for (let i = 0; i < queue.length; i += BATCH) {
+      const batch = queue.slice(i, i + BATCH);
+      try {
+        const urls = batch.map(({ article }) => article.link);
+        const reporters = await fetchReporterBatchFromServer(urls);
+        reporters.forEach((info, idx) => {
+          const { article, cid } = batch[idx];
+          if (info.name || info.email) {
+            article.reporterName = info.name;
+            article.reporterEmail = info.email;
+          }
+          if (info.resolvedUrl) {
+            article.resolvedLink = info.resolvedUrl;
+            const cardEl = document.querySelector(`[data-card-id="${cid}"]`);
+            if (cardEl) cardEl.href = info.resolvedUrl;
+          }
+          updateCardAuthor(cid, article);
+        });
+      } catch {
+        // サーバー失敗 → クライアントサイドフォールバック
+        for (const { article, cid } of batch) {
+          await enrichArticleClientSide(article, cid);
+          updateCardAuthor(cid, article);
+        }
+      }
+    }
+  } else {
+    // GitHub Pages等: CORSプロキシ経由で3件ずつ
+    const BATCH = 3;
+    for (let i = 0; i < queue.length; i += BATCH) {
+      const batch = queue.slice(i, i + BATCH);
+      await Promise.all(batch.map(async ({ article, cid }) => {
+        await enrichArticleClientSide(article, cid);
+        updateCardAuthor(cid, article);
+      }));
+    }
   }
 }
 
