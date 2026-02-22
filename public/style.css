@@ -258,6 +258,18 @@ main {
   color: var(--primary-light);
 }
 
+.news-card .card-author.reporter-loading {
+  background: #f0f4f8;
+  border-left-color: var(--border);
+  color: var(--text-light);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
 .news-card .card-meta {
   display: flex;
   justify-content: space-between;

@@ -188,6 +188,55 @@ function parseRSSXml(xmlText) {
 }
 
 // ------------------------------------------------------------------
+// Google News URL → 実際の記事URLを解決
+// ------------------------------------------------------------------
+
+function decodeGoogleNewsUrl(gnewsUrl) {
+  try {
+    const match = gnewsUrl.match(/\/articles\/([A-Za-z0-9_-]+)/);
+    if (!match) return null;
+
+    // base64url → standard base64
+    let b64 = match[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+
+    const raw = atob(b64);
+    // protobuf内に埋め込まれたURLを検索
+    const urlStart = raw.indexOf('http');
+    if (urlStart === -1) return null;
+
+    let url = '';
+    for (let i = urlStart; i < raw.length; i++) {
+      const code = raw.charCodeAt(i);
+      if (code < 0x20 || code > 0x7e) break;
+      url += raw[i];
+    }
+
+    if (url.match(/^https?:\/\/.+\..+/)) return url;
+  } catch { /* decode error */ }
+  return null;
+}
+
+async function resolveGoogleNewsUrl(gnewsUrl) {
+  // 1) ローカルでbase64デコードを試行（高速・ネットワーク不要）
+  const decoded = decodeGoogleNewsUrl(gnewsUrl);
+  if (decoded) return decoded;
+
+  // 2) フォールバック: CORSプロキシ経由で取得し、リダイレクト先URLを抽出
+  try {
+    const html = await fetchWithProxy(gnewsUrl);
+    // <a href="..."> からGoogle以外のURLを検索
+    const linkMatch = html.match(/<a[^>]+href="(https?:\/\/(?!news\.google\.com)[^"]+)"/);
+    if (linkMatch) return linkMatch[1];
+    // data-url属性
+    const dataMatch = html.match(/data-url="(https?:\/\/[^"]+)"/);
+    if (dataMatch) return dataMatch[1];
+  } catch { /* fetch error */ }
+
+  return null;
+}
+
+// ------------------------------------------------------------------
 // 記事ページから記者名・連絡先をスクレイピング
 // ------------------------------------------------------------------
 
@@ -265,25 +314,53 @@ function extractReporterFromHtml(html) {
 
 // Fetch article page and update card with reporter info (non-blocking)
 async function enrichArticleWithReporter(article, cardId) {
-  // Skip Google News redirect URLs (they don't contain the actual article)
-  if (!article.link || article.link.includes('news.google.com')) return;
+  if (!article.link) return;
+
+  // カード上に取得中表示
+  const cardEl = document.querySelector(`[data-card-id="${cardId}"]`);
+  if (cardEl) {
+    const authorArea = cardEl.querySelector('.card-author-area');
+    if (authorArea) {
+      authorArea.innerHTML = '<div class="card-author reporter-loading"><span class="author-label">記者情報を取得中...</span></div>';
+    }
+  }
 
   try {
-    const html = await fetchWithProxy(article.link);
+    let url = article.link;
+
+    // Google News URLの場合、実際の記事URLを解決
+    if (url.includes('news.google.com')) {
+      const realUrl = await resolveGoogleNewsUrl(url);
+      if (!realUrl) {
+        // URL解決失敗 → 元の編集表示に戻す
+        updateCardAuthor(cardId, article);
+        return;
+      }
+      url = realUrl;
+      // 実際のリンクも更新（クリック時に記事に直接飛べるように）
+      article.resolvedLink = realUrl;
+      if (cardEl) cardEl.href = realUrl;
+    }
+
+    const html = await fetchWithProxy(url);
     const reporter = extractReporterFromHtml(html);
 
     if (reporter.name || reporter.email) {
       article.reporterName = reporter.name;
       article.reporterEmail = reporter.email;
-
-      // Update the DOM card in place
-      const cardEl = document.querySelector(`[data-card-id="${cardId}"]`);
-      if (cardEl) {
-        const authorArea = cardEl.querySelector('.card-author-area');
-        if (authorArea) authorArea.innerHTML = buildAuthorHtml(article);
-      }
     }
   } catch { /* ignore fetch errors */ }
+
+  // 最終表示を更新（成功でも失敗でも）
+  updateCardAuthor(cardId, article);
+}
+
+function updateCardAuthor(cardId, article) {
+  const cardEl = document.querySelector(`[data-card-id="${cardId}"]`);
+  if (cardEl) {
+    const authorArea = cardEl.querySelector('.card-author-area');
+    if (authorArea) authorArea.innerHTML = buildAuthorHtml(article);
+  }
 }
 
 // ------------------------------------------------------------------
