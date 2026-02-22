@@ -1,5 +1,18 @@
-// RSS Feed configuration
+// RSS Feed configuration — 佐賀カテゴリを先頭に配置
 const RSS_FEEDS = {
+  saga_construction: {
+    name: '佐賀 建設・建築',
+    url: 'https://news.google.com/rss/search?q=佐賀+建設+OR+建築+OR+工事&hl=ja&gl=JP&ceid=JP:ja',
+  },
+  saga_keizai: {
+    name: '佐賀経済新聞（建築・住宅）',
+    url: 'https://saga.keizai.biz/rss.xml',
+    filter: ['建築', '住宅', '建設', '工事', '施工', '設計', '不動産', '再開発', 'マンション', 'ビル', '店舗', '開業', '着工', '竣工', '改装', '新築', '増築', '解体', 'リフォーム', 'リノベ'],
+  },
+  saga_news: {
+    name: '佐賀新聞',
+    url: 'https://www.saga-s.co.jp/list/feed/rss',
+  },
   general: {
     name: '建設・建築 総合',
     url: 'https://news.google.com/rss/search?q=建設+OR+建築+ニュース&hl=ja&gl=JP&ceid=JP:ja',
@@ -19,19 +32,6 @@ const RSS_FEEDS = {
   infrastructure: {
     name: 'インフラ・土木',
     url: 'https://news.google.com/rss/search?q=インフラ+土木+工事+橋梁&hl=ja&gl=JP&ceid=JP:ja',
-  },
-  saga_construction: {
-    name: '佐賀 建設・建築',
-    url: 'https://news.google.com/rss/search?q=佐賀+建設+OR+建築+OR+工事&hl=ja&gl=JP&ceid=JP:ja',
-  },
-  saga_keizai: {
-    name: '佐賀経済新聞（建築・住宅）',
-    url: 'https://saga.keizai.biz/rss.xml',
-    filter: ['建築', '住宅', '建設', '工事', '施工', '設計', '不動産', '再開発', 'マンション', 'ビル', '店舗', '開業', '着工', '竣工', '改装', '新築', '増築', '解体', 'リフォーム', 'リノベ'],
-  },
-  saga_news: {
-    name: '佐賀新聞',
-    url: 'https://www.saga-s.co.jp/list/feed/rss',
   },
 };
 
@@ -79,29 +79,38 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-function createNewsCard(article) {
+function buildAuthorHtml(article) {
+  if (article.reporterName || article.reporterEmail) {
+    const parts = [];
+    if (article.reporterName) parts.push(`<span class="author-name">${escapeHtml(article.reporterName)}</span>`);
+    if (article.reporterEmail) parts.push(`<span class="author-email">${escapeHtml(article.reporterEmail)}</span>`);
+    return `<div class="card-author"><span class="author-label">記者:</span> ${parts.join(' / ')}</div>`;
+  }
+  if (article.authorName || article.authorEmail) {
+    const parts = [];
+    if (article.authorName) parts.push(`<span class="author-name">${escapeHtml(article.authorName)}</span>`);
+    if (article.authorEmail) parts.push(`<span class="author-email">${escapeHtml(article.authorEmail)}</span>`);
+    return `<div class="card-author"><span class="author-label">著者:</span> ${parts.join(' / ')}</div>`;
+  }
+  if (article.source) {
+    return `<div class="card-author"><span class="author-label">編集:</span> <span class="author-name">${escapeHtml(article.source)}</span></div>`;
+  }
+  return '';
+}
+
+function createNewsCard(article, cardId) {
   const card = document.createElement('a');
   card.className = 'news-card';
   card.href = article.link;
   card.target = '_blank';
   card.rel = 'noopener noreferrer';
-
-  // Build author/editor info HTML
-  let authorHtml = '';
-  if (article.authorName || article.authorEmail) {
-    const parts = [];
-    if (article.authorName) parts.push(`<span class="author-name">${escapeHtml(article.authorName)}</span>`);
-    if (article.authorEmail) parts.push(`<span class="author-email">${escapeHtml(article.authorEmail)}</span>`);
-    authorHtml = `<div class="card-author"><span class="author-label">著者:</span> ${parts.join(' / ')}</div>`;
-  } else if (article.source) {
-    authorHtml = `<div class="card-author"><span class="author-label">編集:</span> <span class="author-name">${escapeHtml(article.source)}</span></div>`;
-  }
+  if (cardId) card.dataset.cardId = cardId;
 
   card.innerHTML = `
     ${article.source ? `<div class="card-source">${escapeHtml(article.source)}</div>` : ''}
     <div class="card-title">${escapeHtml(article.title)}</div>
     ${article.description ? `<div class="card-summary">${escapeHtml(article.description)}</div>` : ''}
-    ${authorHtml}
+    <div class="card-author-area">${buildAuthorHtml(article)}</div>
     <div class="card-meta">
       <span class="card-date">${formatDate(article.pubDate)}</span>
       <span class="read-more">記事を読む &rarr;</span>
@@ -120,16 +129,12 @@ function cleanTitle(title) {
   return title.replace(/\s*-\s*[^-]+$/, '').trim();
 }
 
-// Parse author string "email (name)" or just "name" or "email"
 function parseAuthor(raw) {
   if (!raw) return { name: '', email: '' };
   const str = raw.trim();
-  // RSS spec format: "email (Name)"
   const match = str.match(/^([^\s@]+@[^\s@]+)\s*\((.+)\)$/);
   if (match) return { email: match[1], name: match[2] };
-  // Just email
   if (str.includes('@')) return { email: str, name: '' };
-  // Just name
   return { name: str, email: '' };
 }
 
@@ -139,7 +144,6 @@ function getElementText(parent, tagName) {
 }
 
 function getElementTextNS(parent, nsPrefix, localName) {
-  // Try namespace-aware lookup for dc:creator etc.
   const el = parent.getElementsByTagName(nsPrefix + ':' + localName)[0];
   return el?.textContent?.trim() || '';
 }
@@ -149,7 +153,6 @@ function parseRSSXml(xmlText) {
   const doc = parser.parseFromString(xmlText, 'text/xml');
   const items = doc.querySelectorAll('item');
 
-  // Channel-level author info as fallback
   const channel = doc.querySelector('channel');
   const channelEditor = getElementText(channel, 'managingEditor');
   const channelAuthor = getElementTextNS(channel, 'dc', 'creator');
@@ -163,7 +166,6 @@ function parseRSSXml(xmlText) {
     const source = sourceEl?.textContent || extractSourceFromTitle(fullTitle);
     const descriptionRaw = item.querySelector('description')?.textContent || '';
 
-    // Author: try <author>, <dc:creator>, then channel-level fallback
     const authorRaw = getElementText(item, 'author')
       || getElementTextNS(item, 'dc', 'creator')
       || '';
@@ -177,11 +179,114 @@ function parseRSSXml(xmlText) {
       description: descriptionRaw.replace(/<[^>]*>/g, '').substring(0, 300),
       authorName: author.name,
       authorEmail: author.email,
+      reporterName: '',
+      reporterEmail: '',
     });
   });
 
   return articles.slice(0, 20);
 }
+
+// ------------------------------------------------------------------
+// 記事ページから記者名・連絡先をスクレイピング
+// ------------------------------------------------------------------
+
+function extractReporterFromHtml(html) {
+  const name = [];
+  const email = [];
+
+  // 1) JSON-LD structured data (e.g. xtech.nikkei.com)
+  const ldMatches = html.match(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+  if (ldMatches) {
+    for (const block of ldMatches) {
+      try {
+        const jsonStr = block.replace(/<\/?script[^>]*>/gi, '');
+        const ld = JSON.parse(jsonStr);
+        const items = Array.isArray(ld) ? ld : [ld];
+        for (const item of items) {
+          if (item['@type'] === 'NewsArticle' || item['@type'] === 'Article') {
+            const authors = Array.isArray(item.author) ? item.author : item.author ? [item.author] : [];
+            for (const a of authors) {
+              if (typeof a === 'string') { name.push(a); }
+              else if (a.name) { name.push(a.name); }
+              if (a.email) { email.push(a.email); }
+            }
+          }
+        }
+      } catch { /* ignore parse errors */ }
+    }
+  }
+
+  // 2) <meta name="author">
+  const metaAuthor = html.match(/<meta[^>]+name\s*=\s*["']author["'][^>]+content\s*=\s*["']([^"']+)["']/i)
+    || html.match(/<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+name\s*=\s*["']author["']/i);
+  if (metaAuthor && metaAuthor[1]) name.push(metaAuthor[1]);
+
+  // 3) <meta property="article:author">
+  const metaArticleAuthor = html.match(/<meta[^>]+property\s*=\s*["']article:author["'][^>]+content\s*=\s*["']([^"']+)["']/i)
+    || html.match(/<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+property\s*=\s*["']article:author["']/i);
+  if (metaArticleAuthor && metaArticleAuthor[1]) name.push(metaArticleAuthor[1]);
+
+  // 4) Common byline patterns in Japanese pages
+  const bylinePatterns = [
+    /class\s*=\s*["'][^"']*(?:byline|author-name|writer|journalist|reporter)[^"']*["'][^>]*>([^<]{2,40})</ig,
+    /(?:記者|執筆|文)[：:]?\s*([^\s<]{2,20})/g,
+  ];
+  for (const re of bylinePatterns) {
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      const candidate = m[1].replace(/<[^>]*>/g, '').trim();
+      if (candidate && candidate.length >= 2 && candidate.length <= 30) {
+        name.push(candidate);
+      }
+    }
+  }
+
+  // 5) Email addresses on the page (filter out generic ones)
+  const emailRe = /([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/g;
+  let em;
+  while ((em = emailRe.exec(html)) !== null) {
+    const addr = em[1].toLowerCase();
+    // Skip generic/system emails
+    if (!/noreply|webmaster|info@|support@|admin@|example\.com/.test(addr)) {
+      email.push(em[1]);
+    }
+  }
+
+  // Deduplicate
+  const uniqueNames = [...new Set(name.map((n) => n.trim()).filter(Boolean))];
+  const uniqueEmails = [...new Set(email.map((e) => e.trim()).filter(Boolean))];
+
+  return {
+    name: uniqueNames.slice(0, 2).join('、') || '',
+    email: uniqueEmails.slice(0, 1).join('') || '',
+  };
+}
+
+// Fetch article page and update card with reporter info (non-blocking)
+async function enrichArticleWithReporter(article, cardId) {
+  // Skip Google News redirect URLs (they don't contain the actual article)
+  if (!article.link || article.link.includes('news.google.com')) return;
+
+  try {
+    const html = await fetchWithProxy(article.link);
+    const reporter = extractReporterFromHtml(html);
+
+    if (reporter.name || reporter.email) {
+      article.reporterName = reporter.name;
+      article.reporterEmail = reporter.email;
+
+      // Update the DOM card in place
+      const cardEl = document.querySelector(`[data-card-id="${cardId}"]`);
+      if (cardEl) {
+        const authorArea = cardEl.querySelector('.card-author-area');
+        if (authorArea) authorArea.innerHTML = buildAuthorHtml(article);
+      }
+    }
+  } catch { /* ignore fetch errors */ }
+}
+
+// ------------------------------------------------------------------
 
 async function fetchWithProxy(url) {
   for (const makeProxy of CORS_PROXIES) {
@@ -208,7 +313,6 @@ async function fetchFeed(feedKey) {
     const xml = await fetchWithProxy(feed.url);
     let articles = parseRSSXml(xml);
 
-    // Keyword filtering (e.g. saga_keizai: only construction/housing related)
     if (feed.filter && feed.filter.length > 0) {
       articles = articles.filter((a) => {
         const text = (a.title + ' ' + a.description).toLowerCase();
@@ -223,6 +327,9 @@ async function fetchFeed(feedKey) {
   }
 }
 
+// Global card ID counter for DOM updates
+let cardIdCounter = 0;
+
 function renderNews(categoryKey) {
   newsContainer.innerHTML = '';
   currentCategory = categoryKey;
@@ -230,6 +337,8 @@ function renderNews(categoryKey) {
   document.querySelectorAll('.cat-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.category === categoryKey);
   });
+
+  const enrichQueue = [];
 
   if (categoryKey === 'all') {
     for (const cat of categories) {
@@ -248,7 +357,9 @@ function renderNews(categoryKey) {
       grid.className = 'news-grid';
 
       articles.slice(0, 6).forEach((article) => {
-        grid.appendChild(createNewsCard(article));
+        const cid = 'card-' + (cardIdCounter++);
+        grid.appendChild(createNewsCard(article, cid));
+        if (!article.reporterName) enrichQueue.push({ article, cid });
       });
 
       section.appendChild(grid);
@@ -275,11 +386,24 @@ function renderNews(categoryKey) {
     grid.className = 'news-grid';
 
     articles.forEach((article) => {
-      grid.appendChild(createNewsCard(article));
+      const cid = 'card-' + (cardIdCounter++);
+      grid.appendChild(createNewsCard(article, cid));
+      if (!article.reporterName) enrichQueue.push({ article, cid });
     });
 
     section.appendChild(grid);
     newsContainer.appendChild(section);
+  }
+
+  // Enrich cards with reporter info in background (3 at a time)
+  enrichCardsInBackground(enrichQueue);
+}
+
+async function enrichCardsInBackground(queue) {
+  const BATCH = 3;
+  for (let i = 0; i < queue.length; i += BATCH) {
+    const batch = queue.slice(i, i + BATCH);
+    await Promise.all(batch.map(({ article, cid }) => enrichArticleWithReporter(article, cid)));
   }
 }
 
@@ -314,7 +438,6 @@ async function loadAllNews() {
 
     setupCategoryNav();
 
-    // Fetch all feeds in parallel
     const feedKeys = Object.keys(RSS_FEEDS);
     const results = await Promise.all(feedKeys.map((key) => fetchFeed(key)));
 
