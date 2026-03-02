@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>管理 - 建築ニュース</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>&#9962; 建築ニュース ダッシュボード</h1>
+      <nav>
+        <a href="/">ニュース一覧</a>
+        <a href="/sources">媒体窓口</a>
+        <a href="/admin" class="active">管理</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <h2>管理パネル</h2>
+
+    <div class="admin-grid">
+      <div class="admin-card">
+        <h3>データベース統計</h3>
+        <dl>
+          <dt>総記事数</dt><dd><%= stats.total %> 件</dd>
+          <dt>媒体数</dt><dd><%= stats.sources %> 媒体</dd>
+          <dt>最古の記事</dt><dd><%= stats.oldest ? new Date(stats.oldest).toLocaleDateString('ja-JP') : '---' %></dd>
+          <dt>最新の記事</dt><dd><%= stats.newest ? new Date(stats.newest).toLocaleDateString('ja-JP') : '---' %></dd>
+        </dl>
+      </div>
+
+      <div class="admin-card">
+        <h3>手動収集</h3>
+        <p>「今すぐ収集」を押すと、全フィードからニュースを収集します。</p>
+        <button id="scrape-btn" class="btn btn-primary">今すぐ収集</button>
+        <div id="scrape-status" class="status-msg"></div>
+      </div>
+
+      <div class="admin-card">
+        <h3>自動収集スケジュール</h3>
+        <p>node-cron により <strong>毎日 9:00 / 18:00</strong> に自動収集を実行します。</p>
+        <p>対象: 直近14日間のニュース</p>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <p>建築ニュース ダッシュボード &copy; 2026</p>
+  </footer>
+
+  <script>
+    const btn = document.getElementById('scrape-btn');
+    const status = document.getElementById('scrape-status');
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.textContent = '収集中...';
+      status.textContent = '収集を開始しました。完了まで数分かかる場合があります。';
+      status.className = 'status-msg info';
+
+      try {
+        const res = await fetch('/api/scrape', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          status.textContent = '収集をバックグラウンドで開始しました。ページを再読み込みすると結果が反映されます。';
+          status.className = 'status-msg success';
+        } else {
+          status.textContent = data.message || '収集に失敗しました';
+          status.className = 'status-msg error';
+        }
+      } catch (err) {
+        status.textContent = 'エラー: ' + err.message;
+        status.className = 'status-msg error';
+      }
+
+      // 進捗ポーリング
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch('/api/scrape/status');
+          const d = await r.json();
+          if (!d.running) {
+            clearInterval(poll);
+            btn.disabled = false;
+            btn.textContent = '今すぐ収集';
+            status.textContent = '収集が完了しました。ページを再読み込みしてください。';
+            status.className = 'status-msg success';
+          }
+        } catch { /* ignore */ }
+      }, 5000);
+    });
+  </script>
+</body>
+</html>

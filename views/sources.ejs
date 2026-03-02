@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>媒体窓口一覧 - 建築ニュース</title>
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>&#9962; 建築ニュース ダッシュボード</h1>
+      <nav>
+        <a href="/">ニュース一覧</a>
+        <a href="/sources" class="active">媒体窓口</a>
+        <a href="/admin">管理</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <h2>媒体別 公式窓口一覧</h2>
+    <p class="note">掲載しているのは媒体の公式お問い合わせページのみです。記者個人の連絡先は収集していません。</p>
+
+    <table id="sources-table" class="display compact">
+      <thead>
+        <tr>
+          <th>媒体名</th>
+          <th>お問い合わせページ</th>
+          <th>代表窓口</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% sources.forEach(s => { %>
+        <tr>
+          <td><%= s.source %></td>
+          <td>
+            <% if (s.contact_page_url) { %>
+              <a href="<%= s.contact_page_url %>" target="_blank" rel="noopener noreferrer"><%= s.contact_page_url %></a>
+            <% } else { %>
+              <span class="muted">未登録</span>
+            <% } %>
+          </td>
+          <td><%= s.general_contact || '' %></td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </main>
+
+  <footer>
+    <p>建築ニュース ダッシュボード &copy; 2026</p>
+  </footer>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+  <script>
+    $(document).ready(function () {
+      $('#sources-table').DataTable({
+        pageLength: 50,
+        language: {
+          search: '検索:', lengthMenu: '_MENU_ 件表示',
+          info: '_TOTAL_ 件中 _START_ - _END_ 件', zeroRecords: '媒体がありません',
+          paginate: { previous: '前', next: '次' },
+        },
+      });
+    });
+  </script>
+</body>
+</html>

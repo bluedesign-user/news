@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>建築ニュース ダッシュボード</title>
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>&#9962; 建築ニュース ダッシュボード</h1>
+      <nav>
+        <a href="/" class="active">ニュース一覧</a>
+        <a href="/sources">媒体窓口</a>
+        <a href="/admin">管理</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="filters">
+      <div class="filter-group">
+        <label>期間</label>
+        <div class="filter-buttons" id="period-filter">
+          <a href="/?days=7" class="btn <%= days === 7 ? 'active' : '' %>">7日</a>
+          <a href="/?days=14" class="btn <%= days === 14 ? 'active' : '' %>">14日</a>
+          <a href="/?days=30" class="btn <%= days === 30 ? 'active' : '' %>">30日</a>
+        </div>
+      </div>
+      <div class="filter-group">
+        <label for="source-filter">媒体</label>
+        <select id="source-filter">
+          <option value="">すべて</option>
+          <% sources.forEach(s => { %>
+            <option value="<%= s %>"><%= s %></option>
+          <% }) %>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="tag-filter">タグ</label>
+        <select id="tag-filter">
+          <option value="">すべて</option>
+          <% tags.forEach(t => { %>
+            <option value="<%= t %>"><%= t %></option>
+          <% }) %>
+        </select>
+      </div>
+      <div class="filter-group">
+        <span class="count-badge"><%= rows.length %>件</span>
+      </div>
+    </div>
+
+    <table id="news-table" class="display compact">
+      <thead>
+        <tr>
+          <th>公開日</th>
+          <th>媒体</th>
+          <th>タイトル</th>
+          <th>著者</th>
+          <th>サマリ</th>
+          <th>タグ</th>
+          <th>窓口</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% rows.forEach(row => { %>
+        <tr>
+          <td data-order="<%= row.published_at || '' %>">
+            <%= row.published_at ? new Date(row.published_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) : '' %>
+          </td>
+          <td><%= row.source %></td>
+          <td>
+            <a href="<%= row.url %>" target="_blank" rel="noopener noreferrer" class="article-link">
+              <%= row.title %>
+            </a>
+          </td>
+          <td><%= row.author %></td>
+          <td class="summary-cell"><%= row.summary %></td>
+          <td><%= row.tags %></td>
+          <td>
+            <% if (row.contact_page_url) { %>
+              <a href="<%= row.contact_page_url %>" target="_blank" rel="noopener noreferrer" class="contact-link">窓口</a>
+            <% } %>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </main>
+
+  <footer>
+    <p>建築ニュース ダッシュボード &copy; 2026 | 記者個人の連絡先は収集していません</p>
+  </footer>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+  <script>
+    $(document).ready(function () {
+      var table = $('#news-table').DataTable({
+        pageLength: 50,
+        order: [[0, 'desc']],
+        language: {
+          search: '検索:',
+          lengthMenu: '_MENU_ 件表示',
+          info: '_TOTAL_ 件中 _START_ - _END_ 件',
+          infoEmpty: '該当なし',
+          infoFiltered: '(全 _MAX_ 件から絞込)',
+          paginate: { previous: '前', next: '次' },
+          zeroRecords: 'ニュースがありません',
+        },
+        columnDefs: [
+          { targets: 4, orderable: false },
+        ],
+      });
+
+      // 媒体フィルタ
+      $('#source-filter').on('change', function () {
+        table.column(1).search(this.value).draw();
+      });
+
+      // タグフィルタ
+      $('#tag-filter').on('change', function () {
+        table.column(5).search(this.value).draw();
+      });
+    });
+  </script>
+</body>
+</html>

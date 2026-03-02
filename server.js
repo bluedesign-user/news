@@ -1,87 +1,95 @@
 const express = require('express');
 const path = require('path');
-const { RSS_FEEDS, SAMPLE_DATA, fetchRSS, fetchReporterInfo } = require('./lib/news');
+const cron = require('node-cron');
+const { stmts } = require('./db');
+const { collectAll } = require('./lib/collector');
+const { seedIfEmpty } = require('./lib/seed');
+
+// DB が空ならサンプルデータを投入
+seedIfEmpty();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json());
 
-app.get('/api/categories', (req, res) => {
-  const categories = Object.entries(RSS_FEEDS).map(([key, feed]) => ({
-    key,
-    name: feed.name,
-  }));
-  res.json(categories);
-});
-
-app.get('/api/news/:category', async (req, res) => {
-  try {
-    const { articles, live } = await fetchRSS(req.params.category);
-    res.json({ success: true, articles, live });
-  } catch (err) {
-    console.error(`Error fetching ${req.params.category}:`, err.message);
-    res.status(500).json({ success: false, error: 'ニュースの取得に失敗しました' });
-  }
-});
-
-app.get('/api/news', async (req, res) => {
-  try {
-    const allArticles = {};
-    let anyLive = false;
-    const promises = Object.keys(RSS_FEEDS).map(async (key) => {
-      try {
-        const { articles, live } = await fetchRSS(key);
-        allArticles[key] = articles;
-        if (live) anyLive = true;
-      } catch (err) {
-        console.error(`Error fetching ${key}:`, err.message);
-        allArticles[key] = SAMPLE_DATA[key] || [];
-      }
-    });
-    await Promise.all(promises);
-    res.json({ success: true, categories: RSS_FEEDS, articles: allArticles, live: anyLive });
-  } catch (err) {
-    res.status(500).json({ success: false, error: 'ニュースの取得に失敗しました' });
-  }
-});
-
-// 記者情報取得API（単一）
-app.get('/api/reporter', async (req, res) => {
-  const { url } = req.query;
-  if (!url) {
-    return res.status(400).json({ success: false, error: 'url parameter required' });
-  }
-  try {
-    const info = await fetchReporterInfo(url);
-    res.json({ success: true, ...info });
-  } catch (err) {
-    console.error('Reporter fetch error:', err.message);
-    res.status(500).json({ success: false, error: 'Failed to fetch reporter info' });
-  }
-});
-
-// 記者情報取得API（バッチ）
-app.post('/api/reporters', express.json(), async (req, res) => {
-  const { urls } = req.body;
-  if (!Array.isArray(urls) || urls.length === 0) {
-    return res.status(400).json({ success: false, error: 'urls array required' });
-  }
-  const limited = urls.slice(0, 10);
-  const results = await Promise.allSettled(
-    limited.map((url) => fetchReporterInfo(url))
-  );
-  const data = limited.map((url, i) => ({
-    url,
-    ...(results[i].status === 'fulfilled' ? results[i].value : { name: '', email: '', resolvedUrl: null }),
-  }));
-  res.json({ success: true, reporters: data });
-});
+// --- ページルート ---
 
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  const days = parseInt(req.query.days) || 14;
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  const rows = stmts.getNewsByDays.all({ since: since.toISOString() });
+  const sources = [...new Set(rows.map((r) => r.source))].sort();
+  const tags = [...new Set(rows.flatMap((r) => r.tags.split(',').map((t) => t.trim())).filter(Boolean))].sort();
+  res.render('index', { rows, sources, tags, days });
+});
+
+app.get('/sources', (req, res) => {
+  const sources = stmts.getSources.all();
+  res.render('sources', { sources });
+});
+
+app.get('/admin', (req, res) => {
+  const stats = stmts.getStats.get();
+  res.render('admin', { stats });
+});
+
+// --- API ルート ---
+
+app.get('/api/news', (req, res) => {
+  const days = parseInt(req.query.days) || 14;
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  const rows = stmts.getNewsByDays.all({ since: since.toISOString() });
+  res.json({ success: true, count: rows.length, data: rows });
+});
+
+app.get('/api/sources', (req, res) => {
+  const sources = stmts.getSources.all();
+  res.json({ success: true, data: sources });
+});
+
+let scrapeRunning = false;
+
+app.post('/api/scrape', async (req, res) => {
+  if (scrapeRunning) {
+    return res.json({ success: false, message: '収集ジョブが実行中です' });
+  }
+  scrapeRunning = true;
+  res.json({ success: true, message: '収集を開始しました' });
+
+  try {
+    const stats = await collectAll(14, { enrich: true });
+    console.log('手動収集完了:', stats);
+  } catch (err) {
+    console.error('手動収集エラー:', err);
+  } finally {
+    scrapeRunning = false;
+  }
+});
+
+app.get('/api/scrape/status', (req, res) => {
+  res.json({ running: scrapeRunning });
+});
+
+// --- node-cron: 1日2回 (9:00 / 18:00) ---
+cron.schedule('0 9,18 * * *', async () => {
+  if (scrapeRunning) return;
+  scrapeRunning = true;
+  console.log(`[cron] 定時収集開始: ${new Date().toISOString()}`);
+  try {
+    await collectAll(14, { enrich: true });
+  } catch (err) {
+    console.error('[cron] 収集エラー:', err);
+  } finally {
+    scrapeRunning = false;
+  }
 });
 
 app.listen(PORT, () => {
-  console.log(`建築ニュースアプリ起動: http://localhost:${PORT}`);
+  console.log(`建築ニュースダッシュボード起動: http://localhost:${PORT}`);
 });
